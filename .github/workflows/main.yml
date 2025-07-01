@@ -1,6 +1,9 @@
 name: Cosmos DB Emulator Sample
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   test_emulator:
@@ -56,7 +59,7 @@ jobs:
               --name=test-linux-emulator-tty-$i \
               --interactive \
               --tty \
-              mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:latest
+              mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-preview
             echo "Waiting for Emulator to Start"
             sleep 90  # Increased startup timeout
             echo "Getting Emulator Logs"

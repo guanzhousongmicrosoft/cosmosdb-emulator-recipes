@@ -94,11 +94,16 @@ jobs:
           ls -l /usr/local/share/ca-certificates/emulatorcert.crt
           ls -l /etc/ssl/certs/emulatorcert.pem
           
-          # Ensure the directory exists
-          mkdir -p /opt/hostedtoolcache/Python/3.12.3/x64/lib/python3.12/site-packages/certifi/
+          # Dynamically find Python certifi package location and append cert to python ca bundle
+          PYTHON_CERTIFI_PATH=$(python -c "import certifi; print(certifi.where())")
+          echo "Python certifi cacert.pem location: $PYTHON_CERTIFI_PATH"
+          
           # Append cert to python ca bundle
-          sudo sh -c 'echo >> /opt/hostedtoolcache/Python/3.12.5/x64/lib/python3.12/site-packages/certifi/cacert.pem'
-          sudo sh -c 'cat /usr/local/share/ca-certificates/emulatorcert.crt >> /opt/hostedtoolcache/Python/3.12.5/x64/lib/python3.12/site-packages/certifi/cacert.pem'
+          sudo sh -c "echo >> $PYTHON_CERTIFI_PATH"
+          sudo sh -c "cat /usr/local/share/ca-certificates/emulatorcert.crt >> $PYTHON_CERTIFI_PATH"
+          
+          # Verify the certificate was added
+          echo "Certificate successfully added to Python CA bundle"
       # Test Emulator with Python script. Replace cosmosdb.py with your script path and add COSMOS_DB_KEY(emulator connection string) to the repository secrets
       - name: Run Python script
         env:

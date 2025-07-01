@@ -80,12 +80,46 @@ jobs:
             echo "::error::Emulator failed to start after $MAX_RETRIES attempts."
             exit 1
           fi
+          
+          # Store the successful container name for cleanup
+          echo "EMULATOR_CONTAINER_NAME=test-linux-emulator-tty-$i" >> $GITHUB_OUTPUT
       # Download and install Cosmos DB emulator certificate
       - name: Download and install Cosmos DB emulator certificate
         if: steps.run_emulator.outcome == 'success'
         run: |
-          # Download the emulator certificate
-          curl -k https://localhost:8081/_explorer/emulator.pem > ~/emulatorcert.crt
+          # Wait for emulator to be fully ready and check connectivity
+          echo "Checking if emulator is accessible..."
+          MAX_WAIT=30
+          WAIT_COUNT=0
+          while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+            if curl -k -s --connect-timeout 5 https://localhost:8081/_explorer/emulator.pem > /dev/null 2>&1; then
+              echo "Emulator is accessible"
+              break
+            else
+              echo "Waiting for emulator to be accessible... ($((WAIT_COUNT + 1))/$MAX_WAIT)"
+              sleep 10
+              WAIT_COUNT=$((WAIT_COUNT + 1))
+            fi
+          done
+          
+          if [ $WAIT_COUNT -eq $MAX_WAIT ]; then
+            echo "Emulator is not accessible after waiting. Trying alternative methods..."
+            # Try HTTP instead of HTTPS
+            if curl -s --connect-timeout 5 http://localhost:8081/_explorer/emulator.pem > ~/emulatorcert.crt 2>/dev/null; then
+              echo "Downloaded certificate via HTTP"
+            else
+              echo "Failed to download certificate via HTTP, trying HTTPS with different options..."
+              curl -k --insecure --connect-timeout 10 --max-time 30 https://localhost:8081/_explorer/emulator.pem > ~/emulatorcert.crt || {
+                echo "Failed to download certificate. Checking emulator status..."
+                docker ps | grep cosmos
+                docker logs test-linux-emulator-tty-* | tail -20
+                exit 1
+              }
+            fi
+          else
+            # Download the emulator certificate via HTTPS
+            curl -k --insecure --connect-timeout 10 --max-time 30 https://localhost:8081/_explorer/emulator.pem > ~/emulatorcert.crt
+          fi
           
           # Install the emulator certificate
           sudo cp ~/emulatorcert.crt /usr/local/share/ca-certificates/
@@ -115,4 +149,10 @@ jobs:
         if: steps.run_emulator.outcome == 'success'
         run: |
           echo "Cleaning up"
-          docker rm -f test-linux-emulator-tty-$i || true  # Ensure cleanup even in failure
+          CONTAINER_NAME="${{ steps.run_emulator.outputs.EMULATOR_CONTAINER_NAME }}"
+          if [ -n "$CONTAINER_NAME" ]; then
+            docker rm -f "$CONTAINER_NAME" || true
+          else
+            # Fallback: try to clean up any cosmos emulator containers
+            docker ps -a --filter "name=test-linux-emulator-tty" --format "{{.Names}}" | xargs -r docker rm -f || true
+          fi

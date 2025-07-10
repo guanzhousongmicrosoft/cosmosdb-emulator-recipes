@@ -50,6 +50,10 @@ public class CosmosDbDemo
         {
             Console.WriteLine("Beginning CosmosDB Demo...");
             var demo = new CosmosDbDemo();
+            
+            // Print the issue summary first
+            demo.PrintIssue216Summary();
+            
             await demo.RunDemoAsync();
             Console.WriteLine("Demo completed successfully!");
         }
@@ -82,7 +86,7 @@ public class CosmosDbDemo
 
     private async Task RunDemoAsync()
     {
-        // Create a unique database name and container name
+        // Create a unique database and container name
         string databaseName = $"db-{Guid.NewGuid():N}";
         string containerName = $"container-{Guid.NewGuid():N}";
         
@@ -135,6 +139,12 @@ public class CosmosDbDemo
 
         Console.WriteLine("\n🎯 Testing EXACT GitHub Issue #216 reproduction...");
         await TestGitHubIssue216ExactReproductionAsync();
+
+        Console.WriteLine("\n🔥 Testing lupusbytes' frustration scenario...");
+        await TestLupusbytesScenarioAsync();
+
+        Console.WriteLine("\n🔬 Testing exact UpsertItemAsync + Change Feed workflow...");
+        await TestExactUpsertChangeFeedWorkflowAsync();
 
         Console.WriteLine("Cleaning up...");
         await database.DeleteAsync();
@@ -777,6 +787,243 @@ public class CosmosDbDemo
         }
     }
 
+    // Test the lupusbytes comment scenario - struggling with this issue for days
+    private async Task TestLupusbytesScenarioAsync()
+    {
+        Console.WriteLine("\n🔥 Testing lupusbytes' scenario: 'Been banging my head trying to get this working for days'");
+        Console.WriteLine("This reproduces the exact frustration described in GitHub Issue #216 comment");
+        
+        try
+        {
+            // Create a completely separate database and container to isolate the issue
+            string frustrationDbName = "frustration-test-db";
+            string frustrationContainerName = "frustration-container";
+            
+            Console.WriteLine($"Creating isolation test database: {frustrationDbName}");
+            Database frustrationDb = await cosmosClient.CreateDatabaseIfNotExistsAsync(frustrationDbName);
+            
+            Console.WriteLine($"Creating isolation test container: {frustrationContainerName}");
+            ContainerProperties containerProps = new ContainerProperties
+            {
+                Id = frustrationContainerName,
+                PartitionKeyPath = "/id"  // Simple partition key like many users have
+            };
+            
+            Container frustrationContainer = await frustrationDb.CreateContainerIfNotExistsAsync(containerProps);
+            
+            // Add some test data using the EXACT code snippet from GitHub Issue #216
+            Console.WriteLine("Adding test documents using EXACT GitHub Issue #216 code snippet...");
+            
+            // Test the exact UpsertItemAsync pattern from the issue
+            var myEntity1 = new SimpleDocument { Id = "test1", Name = "Test Document 1", Value = 100 };
+            var myEntity2 = new SimpleDocument { Id = "test2", Name = "Test Document 2", Value = 200 };
+            var myEntity3 = new SimpleDocument { Id = "test3", Name = "Test Document 3", Value = 300 };
+            
+            ItemRequestOptions options = null; // Exactly as in the GitHub issue
+            CancellationToken cancellationToken = default;
+            
+            Console.WriteLine("Testing exact UpsertItemAsync pattern from GitHub Issue #216...");
+            
+            // This is the EXACT code snippet from the GitHub issue
+            await frustrationContainer.UpsertItemAsync(
+                myEntity1,
+                new PartitionKey(myEntity1.Id),
+                options, // null
+                cancellationToken: cancellationToken);
+                
+            await frustrationContainer.UpsertItemAsync(
+                myEntity2,
+                new PartitionKey(myEntity2.Id),
+                options, // null
+                cancellationToken: cancellationToken);
+                
+            await frustrationContainer.UpsertItemAsync(
+                myEntity3,
+                new PartitionKey(myEntity3.Id),
+                options, // null
+                cancellationToken: cancellationToken);
+            
+            Console.WriteLine("✅ UpsertItemAsync operations completed successfully");
+            
+            // Now test the various approaches that users might try
+            Console.WriteLine("\n--- Testing Approach 1: Basic Change Feed (what most users try first) ---");
+            await TestBasicChangeFeedApproach(frustrationContainer);
+            
+            Console.WriteLine("\n--- Testing Approach 2: Change Feed with different PageSizeHint values ---");
+            await TestDifferentPageSizeHints(frustrationContainer);
+            
+            Console.WriteLine("\n--- Testing Approach 3: Change Feed with Gateway Mode (recommended fix) ---");
+            await TestGatewayModeChangeFeed(frustrationContainer);
+            
+            Console.WriteLine("\n--- Testing Approach 4: Change Feed with different start positions ---");
+            await TestDifferentStartPositions(frustrationContainer);
+            
+            // Clean up
+            await frustrationDb.DeleteAsync();
+            Console.WriteLine("🧹 Cleaned up frustration test database");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Lupusbytes scenario test failed: {ex.Message}");
+            Console.WriteLine($"This is exactly the kind of error users are experiencing!");
+            throw;
+        }
+    }
+
+    private async Task TestBasicChangeFeedApproach(Container container)
+    {
+        Console.WriteLine("Testing basic Change Feed approach (what users typically try first)...");
+        
+        try
+        {
+            using var iterator = container.GetChangeFeedIterator<SimpleDocument>(
+                ChangeFeedStartFrom.Beginning(),
+                ChangeFeedMode.LatestVersion);
+
+            if (iterator.HasMoreResults)
+            {
+                var response = await iterator.ReadNextAsync();
+                Console.WriteLine($"✅ Basic approach worked! Retrieved {response.Count} documents");
+                
+                foreach (var doc in response)
+                {
+                    Console.WriteLine($"  Document: {doc.Id} - {doc.Name} (Value: {doc.Value})");
+                }
+            }
+            else
+            {
+                Console.WriteLine("No results available");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Basic approach failed: {ex.Message}");
+            if (ex.Message.Contains("cosmos_api.document_change_feed"))
+            {
+                Console.WriteLine("🎯 This is the exact error users are hitting!");
+            }
+        }
+    }
+
+    private async Task TestDifferentPageSizeHints(Container container)
+    {
+        Console.WriteLine("Testing different PageSizeHint values...");
+        
+        int[] pageSizes = { 1, 10, 50, 100, 500, 1000 };
+        
+        foreach (int pageSize in pageSizes)
+        {
+            Console.WriteLine($"  Testing PageSizeHint = {pageSize}...");
+            
+            try
+            {
+                using var iterator = container.GetChangeFeedIterator<SimpleDocument>(
+                    ChangeFeedStartFrom.Beginning(),
+                    ChangeFeedMode.LatestVersion,
+                    new ChangeFeedRequestOptions { PageSizeHint = pageSize });
+
+                if (iterator.HasMoreResults)
+                {
+                    var response = await iterator.ReadNextAsync();
+                    Console.WriteLine($"    ✅ PageSizeHint {pageSize} worked! Retrieved {response.Count} documents");
+                }
+                else
+                {
+                    Console.WriteLine($"    ⚠️ PageSizeHint {pageSize} - No results available");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"    ❌ PageSizeHint {pageSize} failed: {ex.Message}");
+                if (ex.Message.Contains("cosmos_api.document_change_feed"))
+                {
+                    Console.WriteLine($"    🎯 PageSizeHint {pageSize} triggers the GitHub issue!");
+                }
+            }
+        }
+    }
+
+    private async Task TestGatewayModeChangeFeed(Container container)
+    {
+        Console.WriteLine("Testing Change Feed with Gateway Mode (recommended fix)...");
+        Console.WriteLine("Note: This test uses the same client that should already be in Gateway mode");
+        
+        try
+        {
+            using var iterator = container.GetChangeFeedIterator<SimpleDocument>(
+                ChangeFeedStartFrom.Beginning(),
+                ChangeFeedMode.LatestVersion,
+                new ChangeFeedRequestOptions { PageSizeHint = 100 });
+
+            if (iterator.HasMoreResults)
+            {
+                var response = await iterator.ReadNextAsync();
+                Console.WriteLine($"✅ Gateway Mode approach worked! Retrieved {response.Count} documents");
+                Console.WriteLine($"Status Code: {response.StatusCode}");
+                
+                foreach (var doc in response)
+                {
+                    Console.WriteLine($"  Document: {doc.Id} - {doc.Name} (Value: {doc.Value})");
+                }
+            }
+            else
+            {
+                Console.WriteLine("No results available");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Gateway Mode approach failed: {ex.Message}");
+            if (ex.Message.Contains("cosmos_api.lsn_sequence"))
+            {
+                Console.WriteLine("🎯 This is the secondary error users see after switching to Gateway Mode!");
+            }
+        }
+    }
+
+    private async Task TestDifferentStartPositions(Container container)
+    {
+        Console.WriteLine("Testing different Change Feed start positions...");
+        
+        var startPositions = new[]
+        {
+            ("Beginning", ChangeFeedStartFrom.Beginning()),
+            ("Now", ChangeFeedStartFrom.Now()),
+            ("Time (1 hour ago)", ChangeFeedStartFrom.Time(DateTime.UtcNow.AddHours(-1)))
+        };
+        
+        foreach (var (name, startFrom) in startPositions)
+        {
+            Console.WriteLine($"  Testing start position: {name}...");
+            
+            try
+            {
+                using var iterator = container.GetChangeFeedIterator<SimpleDocument>(
+                    startFrom,
+                    ChangeFeedMode.LatestVersion,
+                    new ChangeFeedRequestOptions { PageSizeHint = 100 });
+
+                if (iterator.HasMoreResults)
+                {
+                    var response = await iterator.ReadNextAsync();
+                    Console.WriteLine($"    ✅ Start position '{name}' worked! Retrieved {response.Count} documents");
+                }
+                else
+                {
+                    Console.WriteLine($"    ⚠️ Start position '{name}' - No results available");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"    ❌ Start position '{name}' failed: {ex.Message}");
+                if (ex.Message.Contains("cosmos_api"))
+                {
+                    Console.WriteLine($"    🎯 Start position '{name}' triggers a cosmos_api error!");
+                }
+            }
+        }
+    }
+
     // Test exact GitHub Issue #216 reproduction with proper setup
     private async Task TestGitHubIssue216ExactReproductionAsync()
     {
@@ -800,15 +1047,29 @@ public class CosmosDbDemo
             
             Container issueContainer = await issueDatabase.CreateContainerIfNotExistsAsync(issueContainerProperties);
             
-            // Add some test data
-            Console.WriteLine("Adding test documents...");
-            var doc1 = new SimpleDocument { Id = "test1", Name = "Document 1", Value = 100 };
-            var doc2 = new SimpleDocument { Id = "test2", Name = "Document 2", Value = 200 };
+            // Add some test data using the EXACT UpsertItemAsync pattern from GitHub Issue #216
+            Console.WriteLine("Adding test documents using EXACT GitHub Issue #216 UpsertItemAsync pattern...");
             
-            await issueContainer.CreateItemAsync(doc1, new PartitionKey(doc1.Id));
-            await issueContainer.CreateItemAsync(doc2, new PartitionKey(doc2.Id));
+            var myEntity1 = new SimpleDocument { Id = "test1", Name = "Document 1", Value = 100 };
+            var myEntity2 = new SimpleDocument { Id = "test2", Name = "Document 2", Value = 200 };
             
-            Console.WriteLine("Documents created. Testing Change Feed with exact GitHub issue code...");
+            ItemRequestOptions options = null; // Exactly as in the GitHub issue
+            CancellationToken cancellationToken = default;
+            
+            // This is the EXACT code snippet from the GitHub issue
+            await issueContainer.UpsertItemAsync(
+                myEntity1,
+                new PartitionKey(myEntity1.Id),
+                options, // null
+                cancellationToken: cancellationToken);
+                
+            await issueContainer.UpsertItemAsync(
+                myEntity2,
+                new PartitionKey(myEntity2.Id),
+                options, // null
+                cancellationToken: cancellationToken);
+            
+            Console.WriteLine("Documents created using exact GitHub issue pattern. Testing Change Feed with exact GitHub issue code...");
             
             // Test the exact code from GitHub issue
             var result = await TestGitHubIssue216ExactCodeAsync(issueContainer);
@@ -824,5 +1085,150 @@ public class CosmosDbDemo
             Console.WriteLine($"❌ GitHub Issue #216 exact reproduction test failed: {ex.Message}");
             throw;
         }
+    }
+
+    // Test the exact UpsertItemAsync + Change Feed workflow that's causing issues
+    private async Task TestExactUpsertChangeFeedWorkflowAsync()
+    {
+        Console.WriteLine("\n🔬 Testing EXACT UpsertItemAsync + Change Feed workflow from GitHub Issue #216...");
+        
+        try
+        {
+            // Create a container that matches the exact GitHub issue setup
+            string workflowDbName = "workflow-test-db";
+            string workflowContainerName = "myentity"; // Exact name from GitHub issue
+            
+            Console.WriteLine($"Creating workflow test database: {workflowDbName}");
+            Database workflowDb = await cosmosClient.CreateDatabaseIfNotExistsAsync(workflowDbName);
+            
+            Console.WriteLine($"Creating workflow test container: {workflowContainerName}");
+            ContainerProperties containerProps = new ContainerProperties
+            {
+                Id = workflowContainerName,
+                PartitionKeyPath = "/id"  // Exact partition key from GitHub issue
+            };
+            
+            Container myContainer = await workflowDb.CreateContainerIfNotExistsAsync(containerProps);
+            
+            // Step 1: Use the exact UpsertItemAsync pattern
+            Console.WriteLine("Step 1: Using exact UpsertItemAsync pattern from GitHub Issue #216...");
+            
+            var myEntity = new SimpleDocument { Id = "workflow-test-1", Name = "Workflow Test Document", Value = 500 };
+            ItemRequestOptions options = null; // Exactly as in the GitHub issue
+            CancellationToken cancellationToken = default;
+            
+            // This is the EXACT code snippet from the GitHub issue
+            await myContainer.UpsertItemAsync(
+                myEntity,
+                new PartitionKey(myEntity.Id),
+                options, // null
+                cancellationToken: cancellationToken);
+            
+            Console.WriteLine("✅ UpsertItemAsync completed successfully");
+            
+            // Step 2: Immediately try to use Change Feed (this is where the issue occurs)
+            Console.WriteLine("Step 2: Immediately testing Change Feed with PageSizeHint = 100 (exact issue trigger)...");
+            
+            using var iterator = myContainer.GetChangeFeedIterator<SimpleDocument>(
+                ChangeFeedStartFrom.Beginning(),
+                ChangeFeedMode.LatestVersion,
+                new ChangeFeedRequestOptions { PageSizeHint = 100 });
+
+            if (iterator.HasMoreResults)
+            {
+                var response = await iterator.ReadNextAsync(cancellationToken);
+                Console.WriteLine($"✅ Change Feed worked! Retrieved {response.Count} documents");
+                Console.WriteLine($"Status Code: {response.StatusCode}");
+                
+                foreach (var doc in response)
+                {
+                    Console.WriteLine($"  Document: {doc.Id} - {doc.Name} (Value: {doc.Value})");
+                }
+            }
+            else
+            {
+                Console.WriteLine("No results available from Change Feed");
+            }
+            
+            // Clean up
+            await workflowDb.DeleteAsync();
+            Console.WriteLine("Workflow test database cleaned up");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ UpsertItemAsync + Change Feed workflow failed: {ex.Message}");
+            Console.WriteLine($"Exception Type: {ex.GetType().Name}");
+            if (ex.InnerException != null)
+            {
+                Console.WriteLine($"Inner Exception: {ex.InnerException.Message}");
+            }
+            
+            if (ex.Message.Contains("cosmos_api.document_change_feed"))
+            {
+                Console.WriteLine("🎯 CONFIRMED: This is the exact error from GitHub Issue #216!");
+                Console.WriteLine("The combination of UpsertItemAsync + Change Feed with PageSizeHint = 100 triggers this error.");
+            }
+            
+            throw;
+        }
+    }
+
+    private void PrintIssue216Summary()
+    {
+        Console.WriteLine("\n" + new string('=', 80));
+        Console.WriteLine("🎯 GITHUB ISSUE #216 REPRODUCTION SUMMARY");
+        Console.WriteLine(new string('=', 80));
+        Console.WriteLine();
+        Console.WriteLine("Issue: Change Feed - function cosmos_api.document_change_feed Does Not Exist");
+        Console.WriteLine("URL: https://github.com/Azure/azure-cosmos-db-emulator-docker/issues/216");
+        Console.WriteLine();
+        Console.WriteLine("ORIGINAL PROBLEM:");
+        Console.WriteLine("- Users get error 'cosmos_api.document_change_feed Does Not Exist' when using Change Feed");
+        Console.WriteLine("- Specifically happens with PageSizeHint = 100");
+        Console.WriteLine("- Code works fine with real Azure Cosmos DB, but fails with vnext emulator");
+        Console.WriteLine();
+        Console.WriteLine("PROBLEMATIC CODE PATTERN:");
+        Console.WriteLine("using var iterator = container.GetChangeFeedIterator<T>(");
+        Console.WriteLine("    ChangeFeedStartFrom.Beginning(),");
+        Console.WriteLine("    ChangeFeedMode.LatestVersion,");
+        Console.WriteLine("    new ChangeFeedRequestOptions { PageSizeHint = 100 });");
+        Console.WriteLine();
+        Console.WriteLine("EXACT UPSERT PATTERN FROM ISSUE:");
+        Console.WriteLine("await myContainer.UpsertItemAsync(");
+        Console.WriteLine("    myEntity,");
+        Console.WriteLine("    new PartitionKey(myEntity.Id),");
+        Console.WriteLine("    options, // null");
+        Console.WriteLine("    cancellationToken: cancellationToken)");
+        Console.WriteLine();
+        Console.WriteLine("SECONDARY ISSUE:");
+        Console.WriteLine("- When switching to Gateway Mode (recommended fix), users get:");
+        Console.WriteLine("- 'relation cosmos_api.lsn_sequence does not exist' error");
+        Console.WriteLine();
+        Console.WriteLine("LUPUSBYTES COMMENT:");
+        Console.WriteLine("- 'Been banging my head trying to get this working for days'");
+        Console.WriteLine("- This represents the typical user frustration with this issue");
+        Console.WriteLine();
+        Console.WriteLine("ENVIRONMENT:");
+        Console.WriteLine("- SDK: .NET 9.0 with Microsoft.Azure.Cosmos 3.52.0");
+        Console.WriteLine("- Platform: Aspire + vnext-preview emulator");
+        Console.WriteLine("- Container: myservice-cosmosdb with partition key /id");
+        Console.WriteLine();
+        Console.WriteLine("EXPECTED BEHAVIOR:");
+        Console.WriteLine("- Change Feed should work like it does with real Azure Cosmos DB");
+        Console.WriteLine("- Gateway Mode should resolve the issue");
+        Console.WriteLine();
+        Console.WriteLine("ACTUAL BEHAVIOR:");
+        Console.WriteLine("- Change Feed fails with postgres function errors");
+        Console.WriteLine("- Gateway Mode introduces different postgres errors");
+        Console.WriteLine();
+        Console.WriteLine("THIS TEST REPRODUCES:");
+        Console.WriteLine("1. The exact code pattern from the GitHub issue");
+        Console.WriteLine("2. The frustration scenario described by lupusbytes");
+        Console.WriteLine("3. Different approaches users might try");
+        Console.WriteLine("4. Various PageSizeHint values to identify the trigger");
+        Console.WriteLine("5. Different start positions for comprehensive testing");
+        Console.WriteLine();
+        Console.WriteLine(new string('=', 80));
+        Console.WriteLine();
     }
 }
